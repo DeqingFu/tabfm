@@ -3037,8 +3037,8 @@ class TabFMClassifier(ClassifierMixin, BaseEstimator):
   def _predict_oof_proba(
       self, cv: int = 5
   ) -> tuple[
-    jt.Float[jt.Array | np.ndarray, "E N K"],
-    Optional[jt.Int[jt.Array | np.ndarray, "V"]]]:
+    jt.Float[Array | np.ndarray, "E N K"],
+    Optional[jt.Int[Array | np.ndarray, "V"]]]:
     """Perform out-of-fold predictions on some or all training samples.
 
     Predictions are either made using cross-validation, a single train/val
@@ -3957,8 +3957,8 @@ class TabFMRegressor(RegressorMixin, BaseEstimator):
       self,
       cv: int = 5,
   ) -> tuple[
-    jt.Float[jt.Array | np.ndarray, "E N"],
-    Optional[jt.Int[jt.Array | np.ndarray, "V"]]]:
+    jt.Float[Array | np.ndarray, "E N"],
+    Optional[jt.Int[Array | np.ndarray, "V"]]]:
     """Perform out-of-fold predictions on some or all training samples.
 
     Predictions are either made using cross-validation, a single train/val

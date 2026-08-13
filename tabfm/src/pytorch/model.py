@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 
 def _gelu_tanh(x):
@@ -66,14 +67,16 @@ class RMSNorm(nn.Module):
 
 def rope_interleaved(x, base):
   """Interleaved RoPE over the T axis of [B, T, N, Dh] (lucidrains convention)."""
+  dt = x.dtype
+  xf = x.float()
   dh, t = x.shape[-1], x.shape[1]
   inv = 1.0 / (base ** (torch.arange(0, dh, 2, device=x.device).float() / dh))
   f = torch.outer(torch.arange(t, device=x.device).float(), inv)
-  cos = f.cos().repeat_interleave(2, -1)[None, :, None, :].to(x.dtype)
-  sin = f.sin().repeat_interleave(2, -1)[None, :, None, :].to(x.dtype)
-  x1, x2 = x[..., 0::2], x[..., 1::2]
-  rot = torch.stack((-x2, x1), -1).reshape_as(x)
-  return x * cos + rot * sin
+  cos = f.cos().repeat_interleave(2, -1)[None, :, None, :]
+  sin = f.sin().repeat_interleave(2, -1)[None, :, None, :]
+  x1, x2 = xf[..., 0::2], xf[..., 1::2]
+  rot = torch.stack((-x2, x1), -1).reshape_as(xf)
+  return (xf * cos + rot * sin).to(dt)
 
 
 class RoPE(nn.Module):
@@ -87,13 +90,15 @@ class RoPE(nn.Module):
     self.register_buffer("freqs", inv)
 
   def rotate(self, x):  # x: [B, T, N, Dh], rotate over the T axis
+    dt = x.dtype
+    xf = x.float()
     t = x.shape[1]
     f = torch.outer(torch.arange(t, device=x.device).float(), self.freqs.float())
-    cos = f.cos().repeat_interleave(2, -1)[None, :, None, :].to(x.dtype)
-    sin = f.sin().repeat_interleave(2, -1)[None, :, None, :].to(x.dtype)
-    x1, x2 = x[..., 0::2], x[..., 1::2]
-    rot = torch.stack((-x2, x1), -1).reshape_as(x)
-    return x * cos + rot * sin
+    cos = f.cos().repeat_interleave(2, -1)[None, :, None, :]
+    sin = f.sin().repeat_interleave(2, -1)[None, :, None, :]
+    x1, x2 = xf[..., 0::2], xf[..., 1::2]
+    rot = torch.stack((-x2, x1), -1).reshape_as(xf)
+    return (xf * cos + rot * sin).to(dt)
 
 
 class MultiheadAttention(nn.Module):
@@ -259,6 +264,7 @@ class Encoder(nn.Module):
         MultiheadAttentionBlock(d_model, nhead, dim_ff, activation, rope_base)
         for _ in range(num_blocks)
     ])
+    self.gradient_checkpointing = False
 
   def forward(self, x, attn_mask=None, cached_kv=None, return_kv=False):
     """Runs the stacked attention blocks, optionally with a per-block K/V cache.
@@ -279,7 +285,14 @@ class Encoder(nn.Module):
         kvs.append(kv)
       return x, kvs
     for blk in self.blocks:
-      x = blk(x, attn_mask=attn_mask, rope=self.rope)
+      if self.gradient_checkpointing and self.training and torch.is_grad_enabled():
+        x = checkpoint(
+            lambda z, block=blk: block(z, attn_mask=attn_mask, rope=self.rope),
+            x,
+            use_reentrant=False,
+        )
+      else:
+        x = blk(x, attn_mask=attn_mask, rope=self.rope)
     return x
 
 
@@ -291,6 +304,7 @@ class SetTransformer(nn.Module):
         InducedSelfAttentionBlock(d_model, nhead, dim_ff, num_inds, activation)
         for _ in range(num_blocks)
     ])
+    self.gradient_checkpointing = False
 
   def forward(self, src, attn_mask=None, cached_hidden=None, return_hidden=False):
     """Runs the stacked induced-attention blocks.
@@ -311,7 +325,14 @@ class SetTransformer(nn.Module):
         hiddens.append(h)
       return src, hiddens
     for blk in self.blocks:
-      src = blk(src, attn_mask=attn_mask)
+      if self.gradient_checkpointing and self.training and torch.is_grad_enabled():
+        src = checkpoint(
+            lambda z, block=blk: block(z, attn_mask=attn_mask),
+            src,
+            use_reentrant=False,
+        )
+      else:
+        src = blk(src, attn_mask=attn_mask)
     return src
 
 

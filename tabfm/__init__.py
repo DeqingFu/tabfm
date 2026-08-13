@@ -29,6 +29,14 @@ except ImportError:
 
 from tabfm.src.classifier_and_regressor import TabFMClassifier, TabFMRegressor
 
+# Additive test-time-training API; everything TTT lives in its own module and
+# wraps an unmodified TabFMRegressor.
+from tabfm.src.test_time_training import (
+    TabFMTestTimeTraining,
+    TestTimeTrainedRegressor,
+)
+from tabfm.src.test_time_training import fit_and_predict as ttt_fit_and_predict
+
 # A new PyPI release will be pushed every time `__version__` is increased.
 # When changing this, also update the CHANGELOG.md.
 __version__ = '1.0.1'
