@@ -35,6 +35,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import scipy.optimize as opt
 
 try:
   import torch
@@ -558,6 +559,17 @@ class TestTimeTrainedRegressor:
     self.regressor.fit(X, y)
     try:
       self._fit_adapters()
+      # Refit the ensemble weights on the adapted members. They are kept on
+      # the wrapper, so reg.predict() stays the unadapted baseline. This
+      # reuses the deployed adapters, which have seen every training row, so
+      # the out-of-fold predictions feeding NNLS are mildly optimistic --
+      # accepted deliberately: the alternative (fold-local adapters) costs
+      # one adapter round per fold, and the weights matter enough that stale
+      # ones are worse than slightly leaky ones.
+      if self.test_time_training_.steps and getattr(
+          self.regressor, "enable_nnls", False
+      ):
+        self.test_time_training_ensemble_weights_ = self._refit_nnls_weights(y)
     except Exception:
       self._clear_fitted_state()
       raise
@@ -572,8 +584,13 @@ class TestTimeTrainedRegressor:
     # would otherwise perturb floating-point execution.
     if self.test_time_training_.steps == 0:
       return self.regressor.predict(X)
-    return self.regressor._combine_predictions(
-        self._predict_scaled_with_adapters(X)
+    scaled = self._predict_scaled_with_adapters(X)
+    weights = getattr(self, "test_time_training_ensemble_weights_", None)
+    if weights is None:
+      return self.regressor._combine_predictions(scaled)
+    return np.dot(
+        weights,
+        np.stack([self.regressor._inverse_transform_y(row) for row in scaled]),
     )
 
   # -- fitted-ensemble views -------------------------------------------------
@@ -716,6 +733,7 @@ class TestTimeTrainedRegressor:
         "test_time_training_max_features_",
         "test_time_training_wrapped_layers_",
         "test_time_training_adapter_states_",
+        "test_time_training_ensemble_weights_",
     ):
       if hasattr(self, attr):
         delattr(self, attr)
@@ -907,6 +925,43 @@ class TestTimeTrainedRegressor:
       _restore_requires_grad_state(model, grad_state)
       model.train(was_training)
     return np.concatenate(outputs, axis=0)
+
+  def _refit_nnls_weights(self, y):
+    """Refits NNLS weights from out-of-fold predictions of the adapted members.
+
+    Same procedure and candidate count the plain ensemble uses, so the only
+    difference from it is that the members carry adapters -- the comparison
+    stays apples to apples. Routes upstream's own fold/holdout machinery
+    through the adapter-aware forward pass rather than reimplementing it.
+
+    The out-of-fold predictions come from the deployed adapters, which have
+    seen every training row, so they are mildly optimistic. Accepted
+    deliberately: fold-local adapters would cost one adapter round per fold.
+    """
+    reg = self.regressor
+    # Temporarily shadow the bound method; deleted in finally so nothing
+    # unpicklable is left on the estimator.
+    reg._batch_forward = self._adapted_batch_forward
+    try:
+      y_oof_scaled, val_idx = reg._compute_oof_preds_scaled(
+          cv=reg.num_folds_for_cv
+      )
+    finally:
+      del reg._batch_forward
+
+    y_orig = np.asarray(y, dtype=float).ravel()
+    if val_idx is not None:
+      y_oof_scaled = y_oof_scaled[:, val_idx]
+      y_orig = y_orig[val_idx]
+    n_members = y_oof_scaled.shape[0]
+    y_oof = np.stack(
+        [reg._inverse_transform_y(row) for row in y_oof_scaled], axis=0
+    )
+    weights, _ = opt.nnls(y_oof.T, y_orig)
+    total = float(np.sum(weights))
+    weights = weights / total if total > 0 else np.ones(n_members) / n_members
+    uniform = np.ones(n_members) / n_members
+    return reg.nnls_beta * weights + (1.0 - reg.nnls_beta) * uniform
 
   def _predict_scaled_with_adapters(self, X):
     """Returns (n_members, n_test) scaled predictions with adapters loaded."""

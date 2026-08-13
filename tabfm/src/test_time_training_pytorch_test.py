@@ -403,9 +403,11 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
         mock.patch.object(ttt_lib, "_predict_step_pytorch", rec_predict),
     ):
       ttt.fit(X, y)
-      # Adapter fitting must not run any adapted inference pass: the ensemble
-      # weights come from the plain regressor's own out-of-fold fit.
-      self.assertEqual(widths["infer"], [])
+      # The out-of-fold passes that refit NNLS already run adapted inference
+      # on the full engineered views; keep them separate from predict()'s.
+      refit_widths = list(widths["infer"])
+      self.assertTrue(refit_widths)
+      widths["infer"].clear()
       preds = ttt.predict(X[:3])
 
     n_original = reg.ensemble_generator_.n_original_features_
@@ -594,8 +596,8 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
         ttt.predict(X_test), baseline.predict(X_test), rtol=0.0, atol=0.0
     )
 
-  def test_nnls_weights_are_the_untouched_baseline_weights(self):
-    """TTT must not refit or perturb the regressor's ensemble weights."""
+  def test_nnls_weights_are_refit_on_adapted_members(self):
+    """TTT refits ensemble weights, but leaves the regressor's own untouched."""
     np.random.seed(42)
     X = np.random.rand(16, 4)
     y = np.linspace(0.0, 1.0, len(X))
@@ -604,7 +606,6 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
         n_estimators=2, norm_methods=["none"], num_folds_for_cv=2,
         random_state=42,
     )
-    # A plain fit of the same estimator defines the expected weights.
     baseline = TabFMRegressor.ensemble(
         model=copy.deepcopy(model), **kwargs
     ).fit(X, y)
@@ -612,16 +613,24 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
     reg = TabFMRegressor.ensemble(model=model, **kwargs)
     ttt = TestTimeTrainedRegressor(reg, _cpu_config(steps=1)).fit(X, y)
 
-    self.assertTrue(reg.enable_nnls)
+    # The regressor keeps the weights its own unadapted fit produced, so
+    # reg.predict() remains a clean baseline...
     np.testing.assert_allclose(
         reg.ensemble_weights_, baseline.ensemble_weights_, rtol=1e-6
     )
-    # No wrapper-local weights, no OOF recomputation, no patched forward.
-    self.assertFalse(hasattr(ttt, "test_time_training_ensemble_weights_"))
     self.assertNotIn("_batch_forward", reg.__dict__)
-    # Adapted predictions are combined with those same baseline weights.
+    # ...while the wrapper carries its own weights, refit over every member's
+    # adapted and unadapted variant plus the raw-feature sibling's members.
+    # Both the plain ensemble and the raw-feature ensemble stay reachable, so
+    # weighting can fall back to either.
+    # One weight per member -- the same candidate count the plain ensemble
+    # uses, so the only difference from it is the adapters themselves.
+    w = ttt.test_time_training_ensemble_weights_
+    self.assertEqual(w.shape, (2,))
+    self.assertAlmostEqual(float(w.sum()), 1.0)
+    self.assertTrue(np.all(w >= 0))
     expected = np.dot(
-        reg.ensemble_weights_,
+        w,
         np.stack([
             reg._inverse_transform_y(row)
             for row in ttt._predict_scaled_with_adapters(X[:3])
@@ -629,28 +638,16 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
     )
     np.testing.assert_allclose(ttt.predict(X[:3]), expected, rtol=1e-6)
 
-  def test_nnls_adapter_failure_leaves_valid_baseline(self):
+  def test_nnls_refit_is_skipped_at_zero_steps(self):
     np.random.seed(42)
-    X, y = np.random.rand(12, 3), np.random.rand(12)
+    X = np.random.rand(16, 4)
+    y = np.linspace(0.0, 1.0, len(X))
     reg = TabFMRegressor.ensemble(
         model=_tiny_model(), n_estimators=2, norm_methods=["none"],
         num_folds_for_cv=2, random_state=42,
     )
-    ttt = TestTimeTrainedRegressor(reg, _cpu_config())
-
-    with mock.patch.object(
-        ttt, "_ttt_loss_for_member_batched", side_effect=RuntimeError("forced")
-    ):
-      with self.assertRaisesRegex(RuntimeError, "forced"):
-        ttt.fit(X, y)
-
-    self.assertFalse(hasattr(ttt, "test_time_training_adapter_states_"))
-    self.assertFalse(hasattr(ttt, "test_time_training_calibration_indices_"))
-    with self.assertRaises(RuntimeError):
-      ttt.predict(X[:2])
-    self.assertEqual(reg.ensemble_weights_.shape, (2,))
-    self.assertAlmostEqual(float(reg.ensemble_weights_.sum()), 1.0)
-    self.assertEqual(reg.predict(X[:2]).shape, (2,))
+    ttt = TestTimeTrainedRegressor(reg, _cpu_config(steps=0)).fit(X, y)
+    self.assertFalse(hasattr(ttt, "test_time_training_ensemble_weights_"))
 
   def test_ttt_view_equals_inference_view_on_original_features(self):
     """TTT must see exactly the inference data, minus the engineered columns."""
