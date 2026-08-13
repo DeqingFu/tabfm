@@ -638,6 +638,33 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
     )
     np.testing.assert_allclose(ttt.predict(X[:3]), expected, rtol=1e-6)
 
+  def test_row_subsampling_uses_the_holdout_path(self):
+    """Capped context (max_num_rows) must work with the adapted NNLS refit.
+
+    Upstream switches from cross-validation to a reserved holdout when rows
+    are subsampled, and the refit routes through that same machinery. Large
+    datasets rely on this path, so cover it here rather than discovering it
+    hours into a benchmark run.
+    """
+    rng = np.random.default_rng(0)
+    n = 6000
+    X, y = rng.random((n, 4)), rng.random(n)
+    reg = TabFMRegressor.ensemble(
+        model=_tiny_model(), n_estimators=2, batch_size=2, random_state=42,
+        max_num_rows=5000,
+    )
+    ttt = TestTimeTrainedRegressor(
+        reg, _cpu_config(steps=1, batch_size=1)
+    ).fit(X, y)
+
+    self.assertIsNotNone(reg.ensemble_generator_.holdout_indices)
+    for member_idx in range(2):
+      self.assertEqual(len(ttt._active_ttt_indices(member_idx)), 5000)
+    w = ttt.test_time_training_ensemble_weights_
+    self.assertEqual(w.shape, (2,))
+    self.assertAlmostEqual(float(w.sum()), 1.0)
+    self.assertEqual(ttt.predict(X[:3]).shape, (3,))
+
   def test_nnls_refit_is_skipped_at_zero_steps(self):
     np.random.seed(42)
     X = np.random.rand(16, 4)

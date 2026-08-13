@@ -792,6 +792,7 @@ class TestTimeTrainedRegressor:
       _configure_model_for_ttt(model, config)
 
     n_members = len(self.test_time_training_flat_configs_)
+    self._warn_if_rows_undersampled()
     print(
         f"TTT: {len(self.test_time_training_wrapped_layers_)} LoRA layers"
         f" under {config.target_layers!r},"
@@ -827,6 +828,31 @@ class TestTimeTrainedRegressor:
     # base architecture between calls.
     _remove_lora_adapters(model)
     model.train(was_training)
+
+  def _warn_if_rows_undersampled(self):
+    """Warns when the row cap is too small for every row to be reachable.
+
+    Each optimizer step draws ``batch_size`` splits and there are ``steps``
+    of them (times ``gradient_accumulation_steps``), so the training run
+    touches at most ``draws * max_train_rows`` rows in total. Below the
+    training-set size, some rows can never enter any context.
+    """
+    config = self.test_time_training_
+    cap = config.max_train_rows
+    if not cap or not config.steps:
+      return
+    n_rows = len(self.regressor.ensemble_generator_.y_)
+    draws = (
+        config.steps * config.batch_size * config.gradient_accumulation_steps
+    )
+    reachable = draws * cap
+    if reachable < n_rows:
+      print(
+          f"TTT warning: max_train_rows={cap} x {draws} draws reaches at most"
+          f" {reachable} of {n_rows} training rows; raise max_train_rows to at"
+          f" least {-(-n_rows // draws)} so every row can be sampled.",
+          flush=True,
+      )
 
   def _train_single_adapter(self, config, member_idx, seed, lora_params):
     """One member: sample -> microbatch -> accumulate -> step -> EMA."""
