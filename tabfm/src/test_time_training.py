@@ -17,7 +17,7 @@
 Wraps a plain, unmodified ``TabFMRegressor``. Per ensemble member: sample
 independent random context/query splits of the training rows, process
 ``batch_size`` splits together per forward pass, average gradients over
-``gradient_accumulation_steps`` such microbatches, do one AdamW update, and
+``gradient_accumulation_steps`` such microbatches, do one optimizer update, and
 repeat for ``steps`` updates while maintaining an EMA of the adapter weights.
 The EMA is deployed. The wrapped regressor's ensemble weights (NNLS when
 enabled) are left exactly as upstream fitted them, so they stay leakage-free
@@ -128,8 +128,16 @@ class TabFMTestTimeTraining:
 
   lora_rank: int = 8
   target_layers: Tuple[str, ...] = ("cell_embedder.in_linear",)
-  steps: int = 8
-  learning_rate: float = 1e-3
+  steps: int = 64
+  learning_rate: float = 1e-2
+  optimizer: str = "adamw"
+  # Set explicitly rather than left to the optimizer: torch defaults differ
+  # (AdamW 0.01, Muon 0.1), which would silently make the two incomparable.
+  weight_decay: float = 0.01
+  learning_rate_schedule: str = "cosine"
+  # Floor for the cosine schedule. Annealing all the way to zero spends the
+  # last steps not moving; a small floor keeps them useful.
+  min_learning_rate: float = 1e-5
   batch_size: int = 4
   gradient_accumulation_steps: int = 1
   ema_decay: float = 0.9
@@ -184,6 +192,27 @@ class TabFMTestTimeTraining:
         raise ValueError(f"{name} must be a positive integer or None.")
     if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
       raise ValueError("learning_rate must be positive and finite.")
+    if self.optimizer not in ("adamw", "muon"):
+      raise ValueError(
+          f"optimizer must be 'adamw' or 'muon', got {self.optimizer!r}."
+      )
+    if not math.isfinite(self.weight_decay) or self.weight_decay < 0:
+      raise ValueError("weight_decay must be non-negative and finite.")
+    # Only the cosine schedule reads min_learning_rate, so only it constrains
+    # the value; a constant schedule must stay usable at any learning rate.
+    if self.learning_rate_schedule == "cosine" and (
+        not math.isfinite(self.min_learning_rate)
+        or not 0 <= self.min_learning_rate <= self.learning_rate
+    ):
+      raise ValueError(
+          "min_learning_rate must be finite and in [0, learning_rate] when "
+          "learning_rate_schedule is 'cosine'."
+      )
+    if self.learning_rate_schedule not in ("constant", "cosine"):
+      raise ValueError(
+          "learning_rate_schedule must be 'constant' or 'cosine', got "
+          f"{self.learning_rate_schedule!r}."
+      )
     if not math.isfinite(self.ema_decay) or not 0.0 < self.ema_decay < 1.0:
       raise ValueError("ema_decay must be in (0, 1).")
     if (
@@ -330,6 +359,28 @@ def _ensure_lora_adapters(model, config, adapter_dtype=None):
         f"No Linear layers found under target_layers={config.target_layers!r}."
     )
   return wrapped
+
+
+def _make_optimizer(config, params):
+  """Builds the adapter optimizer named by the config.
+
+  Muon orthogonalizes the momentum before stepping, so its updates have a
+  fixed scale and its learning rate does not carry over from AdamW's -- it
+  needs its own tuning. It also assumes the matrix it steps is the weight
+  being learned, which a LoRA pair only approximates: orthogonalizing A and B
+  separately does not orthogonalize their product.
+  """
+  if config.optimizer == "adamw":
+    return torch.optim.AdamW(
+        params, lr=config.learning_rate, weight_decay=config.weight_decay
+    )
+  if config.optimizer == "muon":
+    return torch.optim.Muon(
+        params, lr=config.learning_rate, weight_decay=config.weight_decay
+    )
+  raise ValueError(
+      f"Unknown optimizer {config.optimizer!r}; expected 'adamw' or 'muon'."
+  )
 
 
 def _reset_lora_adapters(model, seed=None):
@@ -864,8 +915,15 @@ class TestTimeTrainedRegressor:
     _reset_lora_adapters(model, seed=seed)
     if train_pool.size <= 1:
       return _lora_state_dict(model)
-    optimizer = torch.optim.AdamW(
-        list(lora_params.values()), lr=config.learning_rate
+    optimizer = _make_optimizer(config, list(lora_params.values()))
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, config.steps),
+            eta_min=config.min_learning_rate,
+        )
+        if config.learning_rate_schedule == "cosine"
+        else None
     )
     ema = {
         n: torch.zeros_like(p, dtype=torch.float32)
@@ -894,6 +952,8 @@ class TestTimeTrainedRegressor:
             f"Non-finite TTT loss for member {member_idx}, step {step + 1}."
         )
       optimizer.step()
+      if scheduler is not None:
+        scheduler.step()
       n_updates += 1
       with torch.no_grad():
         for name, param in lora_params.items():

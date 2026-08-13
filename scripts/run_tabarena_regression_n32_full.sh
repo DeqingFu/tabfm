@@ -84,7 +84,7 @@ readonly FOLD="0"
 
 readonly TTT_LORA_RANK="8"
 readonly TTT_TARGET_LAYERS="cell_embedder.in_linear"
-readonly TTT_STEPS="8"
+readonly TTT_STEPS="64"
 # Independent context/query draws are forwarded together as one batch, which
 # both cuts gradient noise and keeps the GPU busy. Activation memory scales
 # with TTT_BATCH_SIZE; on a 40GB card 4 is the practical ceiling for ~1000
@@ -92,7 +92,7 @@ readonly TTT_STEPS="8"
 # TTT_BATCH_SIZE=1 TTT_GRAD_ACCUM=4 ./scripts/run_tabarena_regression_n32_full.sh ...
 readonly TTT_BATCH_SIZE="${TTT_BATCH_SIZE:-4}"
 readonly TTT_GRAD_ACCUM="${TTT_GRAD_ACCUM:-1}"
-readonly TTT_LEARNING_RATE="1e-3"
+readonly TTT_LEARNING_RATE="1e-2"
 readonly TTT_TEST_FRACTION="0.2"
 
 readonly -a METHODS=(
