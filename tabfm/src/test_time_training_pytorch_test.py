@@ -25,6 +25,9 @@ import torch
 
 from tabfm.src import test_time_training as ttt_lib
 from tabfm.src.classifier_and_regressor import TabFMRegressor
+from tabfm.src.test_time_training import (
+    regressor_for_test_time_training,
+)
 from tabfm.src.pytorch import model as pytorch_model
 from tabfm.src.test_time_training import (
     TabFMTestTimeTraining,
@@ -731,6 +734,33 @@ class TestTimeTrainingPyTorchTest(unittest.TestCase):
     ttt.fit(np.random.rand(12, 3), np.random.rand(12))
     self.assertFalse(hasattr(reg, "ensemble_weights_"))
     self.assertEqual(ttt.predict(np.random.rand(3, 3)).shape, (3,))
+
+  def test_ttt_regressor_drops_engineered_views_but_keeps_nnls(self):
+    """The preset differs from .ensemble() in exactly the ways measured.
+
+    Adaptation flips which parts of the ensemble bundle help: the engineered
+    views stop paying off, the learned blend weights start to. Guard both
+    halves, since dropping NNLS along with the crosses would look like a
+    harmless simplification and give up the better half.
+    """
+    reg = regressor_for_test_time_training(
+        model=_tiny_model(), n_estimators=4, random_state=42,
+    )
+    self.assertEqual(reg.n_feature_crosses, 0)
+    self.assertEqual(reg.n_svd_features, 0)
+    self.assertTrue(reg.enable_nnls)
+    self.assertEqual(reg.n_estimators, 4)
+
+    plain = TabFMRegressor.ensemble(model=_tiny_model(), n_estimators=4)
+    self.assertNotEqual(plain.n_feature_crosses, 0)
+    self.assertNotEqual(plain.n_svd_features, 0)
+
+  def test_ttt_regressor_overrides_win(self):
+    reg = regressor_for_test_time_training(
+        model=_tiny_model(), n_feature_crosses="sqrt", enable_nnls=False,
+    )
+    self.assertEqual(reg.n_feature_crosses, "sqrt")
+    self.assertFalse(reg.enable_nnls)
 
 
 if __name__ == "__main__":

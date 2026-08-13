@@ -24,10 +24,12 @@
 #     Raw-feature TTT, followed by raw-feature inference.
 #   ensemble:
 #     No TTT; raw, feature-cross, and SVD ensemble inference with NNLS weights.
-#   ensemble_ttt:
-#     Each of 32 members independently performs TTT using raw features only.
-#     NNLS weights stay the plain ensemble's, fitted from its own
-#     leakage-free out-of-fold predictions.
+#   nnls_ttt:
+#     Members on raw features only -- no crosses, no SVD -- each performing TTT
+#     independently, blended by NNLS refitted on the adapted members. After
+#     adaptation the engineered views stop paying off and start costing
+#     variance, while the learned blend weights begin to earn their place; see
+#     regressor_for_test_time_training for the measurements.
 #
 # The command intentionally spells out the experiment settings rather than
 # relying on the Python runner's defaults. Negative CLI switches are omitted
@@ -99,7 +101,7 @@ readonly -a METHODS=(
   "default"
   "default_ttt"
   "ensemble"
-  "ensemble_ttt"
+  "nnls_ttt"
 )
 
 if [[ ! -x "${PYTHON}" ]]; then
@@ -171,7 +173,7 @@ echo "  TTT checkpointing:        off (chunking left at model defaults)"
 echo "  AMP:                      enabled"
 echo "  bfloat16 frozen model:    enabled"
 echo "  float32 LoRA adapters:    enabled"
-echo "  ensemble_ttt NNLS:        baseline weights (not refit)"
+echo "  nnls_ttt blending:        NNLS refit on the adapted members"
 echo "  prediction saving:        enabled"
 echo "  repeat/fold/seed:         ${REPEAT}/${FOLD}/${SEED}"
 echo "  results directory:        ${RESULTS_DIR}"

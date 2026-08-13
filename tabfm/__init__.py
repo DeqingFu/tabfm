@@ -34,6 +34,7 @@ from tabfm.src.classifier_and_regressor import TabFMClassifier, TabFMRegressor
 from tabfm.src.test_time_training import (
     TabFMTestTimeTraining,
     TestTimeTrainedRegressor,
+    regressor_for_test_time_training,
 )
 from tabfm.src.test_time_training import fit_and_predict as ttt_fit_and_predict
 
