@@ -24,6 +24,17 @@ enabled) are left exactly as upstream fitted them, so they stay leakage-free
 and ``steps=0`` is bit-exactly the plain ensemble. There is no early stopping
 or checkpoint selection.
 
+Two measured properties worth knowing before tuning this:
+
+* The checkpoint runs in bfloat16, where batching changes the forward by ~8%
+  relative (float32 agrees to 3.7e-6). So ``batch_size`` and
+  ``gradient_accumulation_steps`` are gradient-identical in exact arithmetic
+  but not interchangeable in practice -- swapping them moves results by about
+  the size of the whole adaptation effect. Record which was used.
+* Expect a modest average gain, not the size a single dataset suggests. On
+  four datasets not used for tuning the mean is -1.137% with two of four
+  regressing; see ``regressor_for_test_time_training``.
+
 Example:
   reg = TabFMRegressor(model, n_estimators=8, random_state=0)
   ttt = TestTimeTrainedRegressor(reg).fit(X_train, y_train)
@@ -382,8 +393,14 @@ def regressor_for_test_time_training(model, **overrides):
   for, and mixing the two back in only adds variance -- the full bundle's
   spread across seeds was 2.3pp against 0.34pp for raw + NNLS.
 
-  Measured on one dataset and one fold, so treat the shape of the table as the
-  finding and the exact numbers as provisional.
+  Measured on one dataset and one fold. The shape of the table is the finding;
+  the magnitudes do not carry. Every hyperparameter here was chosen against
+  airfoil's test split, and on four datasets that took no part in that choice
+  the effect is far smaller and not uniform -- concrete -5.475%, healthcare
+  -1.301%, QSAR_fish +0.749%, Fiat500 +1.478% (n_estimators=1, three seeds
+  each), a mean of -1.137% with two of four regressing. Expect a real but
+  modest average gain and a genuine loss on some datasets, not the ~8% airfoil
+  suggests.
   """
   params = dict(
       n_estimators=32,
