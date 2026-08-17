@@ -28,7 +28,7 @@ Example:
   PYTHONPATH=. python scripts/run_tabarena_regression_pytorch_ensemble_ttt.py \
       --dataset airfoil_self_noise
   PYTHONPATH=. python scripts/run_tabarena_regression_pytorch_ensemble_ttt.py \
-      --dataset 46904 --method nnls_ttt
+      --dataset 46904 --method ensemble_ttt
   PYTHONPATH=. python scripts/run_tabarena_regression_pytorch_ensemble_ttt.py \
       --dataset 46904 --method default_ttt
 """
@@ -196,11 +196,11 @@ def _parse_args() -> argparse.Namespace:
   parser.add_argument(
       "--method",
       action="append",
-      choices=("default", "default_ttt", "ensemble", "nnls_ttt"),
+      choices=("default", "default_ttt", "ensemble", "ensemble_ttt"),
       default=[],
       help=(
           "Method to run. May be repeated. Defaults to ensemble and"
-          " nnls_ttt."
+          " ensemble_ttt."
       ),
   )
   parser.add_argument(
@@ -230,7 +230,7 @@ def _parse_args() -> argparse.Namespace:
       "--no-ensemble-nnls",
       action="store_true",
       help=(
-          "For nnls_ttt only, use uniform averaging instead of NNLS "
+          "For ensemble_ttt only, use uniform averaging instead of NNLS "
           "weighting. The "
           "ensemble baseline keeps standard NNLS."
       ),
@@ -362,9 +362,9 @@ def _effective_n_estimators(method: str, args: argparse.Namespace) -> int:
 
 
 def _ensemble_enable_nnls(method: str, args: argparse.Namespace) -> bool | None:
-  if not (method.startswith("ensemble") or method == "nnls_ttt"):
+  if not method.startswith("ensemble"):
     return None
-  if method == "nnls_ttt" and args.no_ensemble_nnls:
+  if method == "ensemble_ttt" and args.no_ensemble_nnls:
     return False
   return True
 
@@ -604,11 +604,9 @@ def _build_regressor(model, method: str, args: argparse.Namespace):
       random_state=args.seed,
       use_amp=not args.no_amp,
   )
-  if method == "nnls_ttt" and args.no_ensemble_nnls:
+  if method == "ensemble_ttt" and args.no_ensemble_nnls:
     kwargs["enable_nnls"] = False
-  if method == "nnls_ttt":
-    regressor = tabfm.regressor_for_test_time_training(model=model, **kwargs)
-  elif method.startswith("default"):
+  if method.startswith("default"):
     regressor = tabfm.TabFMRegressor(model=model, **kwargs)
   elif method.startswith("ensemble"):
     regressor = tabfm.TabFMRegressor.ensemble(model=model, **kwargs)
@@ -876,7 +874,7 @@ def main() -> None:
   _configure_openml_cache(args.openml_cache_dir, log=False)
   args.results_dir.mkdir(parents=True, exist_ok=True)
   log_file = None
-  methods = tuple(args.method or ("ensemble", "nnls_ttt"))
+  methods = tuple(args.method or ("ensemble", "ensemble_ttt"))
   datasets = _resolve_datasets(args.dataset, args.openml_suite)
   run_slug = _run_slug(methods, datasets, args)
   run_dir = args.results_dir / "runs" / run_slug

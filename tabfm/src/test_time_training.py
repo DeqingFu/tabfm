@@ -32,8 +32,9 @@ Two measured properties worth knowing before tuning this:
   but not interchangeable in practice -- swapping them moves results by about
   the size of the whole adaptation effect. Record which was used.
 * Expect a modest average gain, not the size a single dataset suggests. On
-  four datasets not used for tuning the mean is -1.137% with two of four
-  regressing; see ``regressor_for_test_time_training``.
+  four datasets not used for tuning the mean gain is about -1.1% at
+  n_estimators=1 and -0.4% at n_estimators=8, with two of four datasets
+  regressing at the default learning rate.
 
 Example:
   reg = TabFMRegressor(model, n_estimators=8, random_state=0)
@@ -61,7 +62,6 @@ from tabfm.src.pytorch.model import (
     _ROW_CHUNK_SIZE,
 )
 from tabfm.src.classifier_and_regressor import (
-    TabFMRegressor,
     _apply_categorical_permutation,
     _check_regressor_output_dim,
     _pad_cat_mask,
@@ -371,45 +371,6 @@ def _ensure_lora_adapters(model, config, adapter_dtype=None):
         f"No Linear layers found under target_layers={config.target_layers!r}."
     )
   return wrapped
-
-
-def regressor_for_test_time_training(model, **overrides):
-  """Builds the regressor configuration that measured best under TTT.
-
-  ``TabFMRegressor.ensemble`` bundles three things: feature crosses, SVD
-  features, and NNLS-weighted blending. Adaptation changes which of them earn
-  their place. On airfoil at n_estimators=8, test RMSE (three seeds each):
-
-                              no TTT     with TTT
-    raw                       0.93012     0.79618
-    raw + NNLS                0.92397     0.78866
-    raw + crosses + SVD       0.87225     0.81349
-    raw + crosses + SVD+NNLS  0.83358     0.79641
-
-  Without adaptation the engineered views carry the ensemble and NNLS alone
-  barely registers. With adaptation it inverts: the engineered views become a
-  liability while the learned blend weights start paying off. Adapted members
-  on raw features apparently reach what the engineered views were compensating
-  for, and mixing the two back in only adds variance -- the full bundle's
-  spread across seeds was 2.3pp against 0.34pp for raw + NNLS.
-
-  Measured on one dataset and one fold. The shape of the table is the finding;
-  the magnitudes do not carry. Every hyperparameter here was chosen against
-  airfoil's test split, and on four datasets that took no part in that choice
-  the effect is far smaller and not uniform -- concrete -5.475%, healthcare
-  -1.301%, QSAR_fish +0.749%, Fiat500 +1.478% (n_estimators=1, three seeds
-  each), a mean of -1.137% with two of four regressing. Expect a real but
-  modest average gain and a genuine loss on some datasets, not the ~8% airfoil
-  suggests.
-  """
-  params = dict(
-      n_estimators=32,
-      n_feature_crosses=0,
-      n_svd_features=0,
-      enable_nnls=True,
-  )
-  params.update(overrides)
-  return TabFMRegressor.ensemble(model=model, **params)
 
 
 def _make_optimizer(config, params):
